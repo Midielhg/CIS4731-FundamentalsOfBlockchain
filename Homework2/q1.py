@@ -15,7 +15,7 @@
 # c) Plot the values printed by the experiment in part (b). Using linear extrapolation, estimate the time it takes for your computer to break RSA with 2048-bit key. Please note that the results printed in part b are the logarithms of actual time in seconds.
 
 
-
+    
 
 # -*- coding: utf-8 -*-
 """
