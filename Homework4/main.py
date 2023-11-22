@@ -62,14 +62,13 @@ class Transaction:
         rv += ","
     rv += "]"
     return rv
-
-    def __init__(self, owner_index: int, inputs, outputs):
-        self.owner_index = owner_index
-        self.timestamp = time_ns()
-        self.inputs = inputs
-        self.outputs = outputs
-        self.signature = rsa_message_sign(str(self), miners[owner_index].d,
-            miners[owner_index].n)
+      
+  def __init__(self, owner_index: int, inputs, outputs):
+    self.owner_index = owner_index
+    self.timestamp = time_ns()
+    self.inputs = inputs
+    self.outputs = outputs
+    self.signature = rsa_message_sign(str(self), miners[owner_index].d, miners[owner_index].n)
 
 
 def rsa_message_sign(message: str, d: int, n: int) -> int:
