@@ -6,12 +6,12 @@ import rsa
 import hashlib
 from collections import deque
 
-no_of_miners = 3
+no_of_miners = 5
 miner_incentive = 8000000#NYTP = 8 NYTC
-mined_blocks_per_miner = 2
+mined_blocks_per_miner = 4
 rsa_size = 512
-difficulty = 1 << 236  # keep it larger than or equal to 1 << 236
-transaction_rate = .5  # per second. Max allowed: 10 per seconds
+difficulty = 1 << 239  # keep it larger than or equal to 1 << 236
+transaction_rate = 1  # per second. Max allowed: 10 per seconds
 i = 0
 transaction_pool = deque()
 blockchain = []
