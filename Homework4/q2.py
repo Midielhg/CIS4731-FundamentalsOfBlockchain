@@ -166,6 +166,7 @@ def make_transaction(sender: int, receivers, amount: int):
 
 def initiate_transaction(sender: int, transaction_rate: float):
   miners[sender].balance_lock.acquire()
+  #check if the sender has enough balance to make a transaction
   if miners[sender].balance > 1000 and random() > (1 - transaction_rate / 10.0):
         #spend half of the account balance
         receivers = []
@@ -173,8 +174,16 @@ def initiate_transaction(sender: int, transaction_rate: float):
           if j != sender:
             receivers.append(j)
         val = miners[sender].balance // (2 * len(receivers))
-        if make_transaction(sender, receivers, val):
-          miners[sender].balance -= len(receivers) * val
+        #calculate transaction fee (2% of the transaction amount)
+        transaction_fee = int(val * 0.02)
+        #deduct the transaction fee from the sender's balance
+        miners[sender].balance -= transaction_fee
+        #distribute the remaining balance to the receivers
+        net_amount = val - transaction_fee
+        for receiver in receivers:
+          make_transaction(sender, [receiver], net_amount)
+          if make_transaction(sender, receivers, val):
+            miners[sender].balance -= len(receivers) * val
   miners[sender].balance_lock.release()
   
 def miner_run(index: int):
@@ -219,7 +228,7 @@ def miner_run(index: int):
 
     #try the proposed block with a new nonce
     proposed = Block(transactions, pred_digest, block_index + 1, index,
-                     start_time, nonce)
+                    start_time, nonce)
 
     if proposed.digest < difficulty:  #miner wins the lottery!
       count += 1
