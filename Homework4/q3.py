@@ -1,17 +1,20 @@
+from asyncio import sleep
 from threading import Thread, Lock
+import threading
 from time import time_ns
 from random import random
 from random import randrange
 import rsa
 import hashlib
 from collections import deque
+import time
 
-no_of_miners = 3
+no_of_miners = 5
 miner_incentive = 8000000#NYTP = 8 NYTC
-mined_blocks_per_miner = 2
+mined_blocks_per_miner = 4
 rsa_size = 512
-difficulty = 1 << 236  # keep it larger than or equal to 1 << 236
-transaction_rate = .5  # per second. Max allowed: 10 per seconds
+difficulty = 1 << 239  # keep it larger than or equal to 1 << 236
+transaction_rate = 1  # per second. Max allowed: 10 per seconds
 i = 0
 transaction_pool = deque()
 blockchain = []
@@ -177,79 +180,148 @@ def initiate_transaction(sender: int, transaction_rate: float):
           miners[sender].balance -= len(receivers) * val
   miners[sender].balance_lock.release()
   
+verification_status = {'verified': True}
+  
+def thread_safe_verification_print():
+    global verification_status 
+    plock.acquire()
+    print("Verification status:", "Verified" if verification_status['verified'] else "Not Verified")
+    plock.release()
+  
+def verify_all_blocks():
+    blockchain_lock.acquire()
+    for block in blockchain:
+        # Check block digest validity
+        block_digest = int(hashlib.sha256(str(block).encode("ascii", "ignore")).hexdigest(), 16)
+        if block.digest != block_digest or block.digest >= difficulty:
+            print("Invalid block digest:", block)
+            verification_status['verified'] = False
+
+        # Check block nonce validity
+        if block.digest >= difficulty:
+            print("Invalid block nonce:", block)
+            verification_status['verified'] = False
+
+        # Check pred_digest validity
+        if block.block_number > 0:
+            pred_block = blockchain[block.block_number - 1]
+            if block.pred_digest != pred_block.digest:
+                print("Invalid pred_digest:", block)
+                verification_status['verified'] = False
+
+        # Check each transaction in the block
+        for transaction in block.transactions:
+            # Check signature validity
+            if not rsa_signature_verify(str(transaction), transaction.signature, miners[transaction.owner_index].e, miners[transaction.owner_index].n):
+                print("Invalid transaction signature:", transaction)
+                verification_status['verified'] = False
+
+            # Check each input and output of the transaction
+            for transaction_input in transaction.inputs:
+                # Check if the input is owned by the miner who signed the transaction
+                if transaction_input.block_id >= len(blockchain) or \
+                  transaction_input.transaction_id >= len(blockchain[transaction_input.block_id].transactions) or \
+                  transaction_input.output_id >= len(blockchain[transaction_input.block_id].transactions[transaction_input.transaction_id].outputs) or \
+                  blockchain[transaction_input.block_id].transactions[transaction_input.transaction_id].outputs[transaction_input.output_id].new_owner_index != transaction.owner_index:
+                    print("Invalid transaction input:", transaction_input)
+                    verification_status['verified'] = False
+
+            for transaction_output in transaction.outputs:
+                # Check if the output has been spent at most once
+                spent_count = 0
+                for other_transaction in block.transactions:
+                    for other_input in other_transaction.inputs:
+                        if other_input.block_id == block.block_number and \
+                          other_input.transaction_id == block.transactions.index(transaction) and \
+                          other_input.output_id == transaction.outputs.index(transaction_output):
+                            spent_count += 1
+                if spent_count > 1:
+                    print("Invalid transaction output:", transaction_output)
+                    verification_status['verified'] = False
+    blockchain_lock.release()
+
+
+
 def miner_run(index: int):
-  global transaction_lock, blockchain, blockchain_lock, no_of_miners
-  public_key = (miners[index].n, miners[index].e)
-  start_time = time_ns()
-  nonce = 0
-  mining_incentive = Transaction(
-    index,
-    [], #no input for this special transaction 
-    [Transaction_output(index, miner_incentive)])
-  transactions = [mining_incentive]
-  transaction_lock.acquire()
-  for t in transaction_pool:
-    transactions.append(t)
-  transaction_lock.release()
-  block_index = -1
-  pred_digest = 0
-  count = 0
-  while count < mined_blocks_per_miner:
-    if (time_ns() -
-        start_time) // 1000000 > 100:  #updates every tenth of a second!
-      mining_incentive = Transaction(
+    global transaction_pool, blockchain, miners, difficulty
+
+    public_key = (miners[index].n, miners[index].e)
+    start_time = time_ns()
+    nonce = 0
+    mining_incentive = Transaction(
         index,
-        [], #no input for this special transaction
+        [],  # no input for this special transaction 
         [Transaction_output(index, miner_incentive)])
-      transactions = [mining_incentive]
-      transaction_lock.acquire()
-      for t in transaction_pool:
+    transactions = [mining_incentive]
+    transaction_lock.acquire()
+    for t in transaction_pool:
         transactions.append(t)
-      transaction_lock.release()
-      longest_chain = -1
-      blockchain_lock.acquire()
-      for block in blockchain:
-        if block.block_number > longest_chain:
-          longest_chain = block.block_number
-          pred_digest = block.digest
-      blockchain_lock.release()
-      block_index = longest_chain
-      start_time = time_ns()
-      initiate_transaction(index, transaction_rate)
+    transaction_lock.release()
+    block_index = -1
+    pred_digest = 0
+    count = 0
+    verification_interval = 5  # seconds
+    next_verification_time = time_ns() + verification_interval * 1_000_000_000
 
-    #try the proposed block with a new nonce
-    proposed = Block(transactions, pred_digest, block_index + 1, index,
-                     start_time, nonce)
+    while count < mined_blocks_per_miner:
+        if (time_ns() - start_time) // 1000000 > 100:  # updates every tenth of a second!
+            mining_incentive = Transaction(
+                index,
+                [],  # no input for this special transaction
+                [Transaction_output(index, miner_incentive)])
+            transactions = [mining_incentive]
+            transaction_lock.acquire()
+            for t in transaction_pool:
+                transactions.append(t)
+            transaction_lock.release()
+            longest_chain = -1
+            blockchain_lock.acquire()
+            for block in blockchain:
+                if block.block_number > longest_chain:
+                    longest_chain = block.block_number
+                    pred_digest = block.digest
+            blockchain_lock.release()
+            block_index = longest_chain
+            start_time = time_ns()
+            initiate_transaction(index, transaction_rate)
 
-    if proposed.digest < difficulty:  #miner wins the lottery!
-      count += 1
-      transaction_lock.acquire()
-      blockchain_lock.acquire()
-      red_flag = False
-      for j in range(1, len(transactions)):
-        if transactions[j] not in transaction_pool:
-          red_flag = True
-          break
-      if not red_flag:
-        miners[index].balance += miner_incentive
-        for j in range(1, len(transactions)):
-          transaction_pool.remove(transactions[j])
-          for o in transactions[j].outputs:
-            miners[o.new_owner_index].balance_lock.acquire()
-            miners[o.new_owner_index].balance += o.amount
-            miners[o.new_owner_index].balance_lock.release()
-        blockchain.append(proposed)
-      blockchain_lock.release()
-      transaction_lock.release()
-      thread_safe_print(
-          "new block: " +
-          str(proposed))# + "\n\t\t" + str(proposed.digest))
-      for miner in miners:
-        thread_safe_print("miner's " + str(miner.index) + " balance is " +  str(miner.balance / 1000000))
-      nonce = 0
-    else:
-      nonce += 1
+        # try the proposed block with a new nonce
+        proposed = Block(transactions, pred_digest, block_index + 1, index,
+                         start_time, nonce)
 
+        if proposed.digest < difficulty:  # miner wins the lottery!
+            count += 1
+            transaction_lock.acquire()
+            blockchain_lock.acquire()
+            red_flag = False
+            for j in range(1, len(transactions)):
+                if transactions[j] not in transaction_pool:
+                    red_flag = True
+                    break
+            if not red_flag:
+                miners[index].balance += miner_incentive
+                for j in range(1, len(transactions)):
+                    transaction_pool.remove(transactions[j])
+                    for o in transactions[j].outputs:
+                        miners[o.new_owner_index].balance_lock.acquire()
+                        miners[o.new_owner_index].balance += o.amount
+                        miners[o.new_owner_index].balance_lock.release()
+                blockchain.append(proposed)
+            blockchain_lock.release()
+            transaction_lock.release()
+            thread_safe_print(
+                "new block: " +
+                str(proposed))  # + "\n\t\t" + str(proposed.digest))
+            for miner in miners:
+                thread_safe_print("miner's " + str(miner.index) + " balance is " + str(miner.balance / 1000000))
+            nonce = 0
+        else:
+            nonce += 1
+
+        # Periodically verify blocks
+        if time_ns() >= next_verification_time:
+            verify_all_blocks()
+            next_verification_time += verification_interval * 1_000_000_000
 
 class Miner:
 
@@ -286,3 +358,4 @@ for t in transaction_pool:
     total_outs += o.amount
 thread_safe_print("Total coins in the pool: " + str(total_outs / 1000000))
 thread_safe_print("Total time of this experiment in seconds: " + str(round((time_ns()-start)/1000000000.0)))
+thread_safe_verification_print()  # Print the verification status
